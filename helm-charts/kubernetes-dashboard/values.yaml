@@ -9,10 +9,10 @@ kubernetes-dashboard:
   ingress:
     enabled: true
     hosts:
-      - dashboard.local
+      - dashboard.prod.local
     annotations:
       cert-manager.io/cluster-issuer: selfsigned-issuer
     tls:
       - secretName: kubernetes-dashboard-tls
         hosts:
-          - dashboard.local
+          - dashboard.prod.local

@@ -10,3 +10,22 @@ controller:
     enabled: false
   extraArgs:
     publish-status-address: localhost
+    enable-ssl-passthrough: "true"
+  terminationGracePeriodSeconds: 300
+  minReadySeconds: 0
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  livenessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  config:
+    ssl-redirect: "false"
+    use-forwarded-headers: "true"
+    compute-full-forwarded-for: "true"
+    use-proxy-protocol: "false"
