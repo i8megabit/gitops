@@ -457,7 +457,11 @@ install_chart() {
 	}
 	
 	local helm_cmd="helm ${action} ${chart} ${CHARTS_DIR}/${chart}"
-	helm_cmd+=" --namespace ${namespace} --create-namespace"
+	helm_cmd+=" --namespace ${namespace}"
+	# Add --create-namespace flag only for install and upgrade actions
+	if [ "$action" = "install" ] || [ "$action" = "upgrade" ]; then
+		helm_cmd+=" --create-namespace"
+	fi
 	
 	[ -n "$version" ] && helm_cmd+=" --version ${version}"
 	[ -n "$values_file" ] && helm_cmd+=" -f ${values_file}"
@@ -862,12 +866,116 @@ install_chart() {
 		# Ждем удаления релиза
 		sleep 5
 		
-		# Удаляем существующие сертификаты и их секреты
-		kubectl delete certificate -n ${namespace} --all 2>/dev/null || true
-		kubectl delete secret -n ${namespace} ollama-tls 2>/dev/null || true
+		# Функция для проверки существования ресурса
+		check_resource_exists() {
+			local resource_type=$1
+			local resource_name=$2
+			kubectl get $resource_type $resource_name -n ${namespace} &>/dev/null
+			return $?
+		}
+		
+		# Функция для удаления сертификата с повторными попытками
+		delete_certificate() {
+			local cert_name=$1
+			local max_attempts=5
+			local attempt=1
+			
+			echo -e "${CYAN}Обработка сертификата ${cert_name}...${NC}"
+			
+			while [ $attempt -le $max_attempts ]; do
+				# Проверяем существование сертификата
+				if ! kubectl get certificate $cert_name -n ${namespace} >/dev/null 2>&1; then
+					echo -e "${GREEN}Сертификат ${cert_name} не существует или уже удален${NC}"
+					return 0
+				fi
+				
+				# Удаляем финализаторы и аннотации
+				kubectl patch certificate $cert_name -n ${namespace} --type=json -p='[
+					{"op": "remove", "path": "/metadata/finalizers"},
+					{"op": "remove", "path": "/metadata/annotations"}
+				]' 2>/dev/null || true
+				
+				# Удаляем связанные CertificateRequest
+				for cr in $(kubectl get certificaterequest -n ${namespace} -o name | grep "^certificaterequest/${cert_name}-" 2>/dev/null); do
+					kubectl patch $cr -n ${namespace} --type=json -p='[
+						{"op": "remove", "path": "/metadata/finalizers"}
+					]' 2>/dev/null || true
+					kubectl delete $cr -n ${namespace} --force --grace-period=0 2>/dev/null || true
+				done
+				
+				# Принудительно удаляем сертификат
+				kubectl delete certificate $cert_name -n ${namespace} --force --grace-period=0 2>/dev/null
+				
+				# Проверяем статус сертификата после удаления
+				sleep 2
+				if kubectl get certificate $cert_name -n ${namespace} >/dev/null 2>&1; then
+					# Если сертификат существует, проверяем, не был ли он пересоздан cert-manager'ом
+					local age=$(kubectl get certificate $cert_name -n ${namespace} -o jsonpath='{.metadata.creationTimestamp}')
+					local current_time=$(date -u +%s)
+					local cert_time=$(date -u -d "$age" +%s)
+					local time_diff=$((current_time - cert_time))
+					
+					if [ $time_diff -lt 10 ]; then
+						echo -e "${GREEN}Сертификат ${cert_name} был успешно удален и автоматически пересоздан cert-manager'ом${NC}"
+						return 0
+					fi
+				else
+					echo -e "${GREEN}Сертификат ${cert_name} успешно удален${NC}"
+					return 0
+				fi
+				
+				attempt=$((attempt + 1))
+				sleep 2
+			done
+			
+			echo -e "${RED}Не удалось удалить сертификат ${cert_name} после $max_attempts попыток${NC}"
+			return 1
+		}
+		
+		echo -e "${CYAN}Удаление существующих сертификатов и секретов...${NC}"
+		
+		# Удаляем все сертификаты
+		for cert in $(kubectl get certificate -n ${namespace} -o name 2>/dev/null | cut -d/ -f2); do
+			echo -e "${CYAN}Обработка сертификата ${cert}...${NC}"
+			if ! delete_certificate $cert; then
+				echo -e "${RED}Ошибка: Не удалось удалить сертификат ${cert}${NC}"
+				exit 1
+			fi
+		done
+		
+		# Удаляем все связанные секреты
+		for secret in ollama-tls kubernetes-dashboard-tls webui-tls; do
+			if kubectl get secret -n ${namespace} $secret &>/dev/null; then
+				echo -e "${CYAN}Удаление секрета ${secret}...${NC}"
+				kubectl delete secret $secret -n ${namespace} --force --grace-period=0
+				
+				# Проверяем удаление секрета
+				if check_resource_exists secret $secret; then
+					echo -e "${RED}Ошибка: Не удалось удалить секрет ${secret}${NC}"
+					exit 1
+				fi
+			fi
+		done
 		
 		# Ждем полного удаления ресурсов
-		sleep 5
+		echo -e "${CYAN}Ожидание удаления ресурсов...${NC}"
+		sleep 10
+		
+		# Финальная проверка
+		if kubectl get certificates -n ${namespace} 2>/dev/null | grep -q "ollama-tls"; then
+			# Проверяем время создания сертификата
+			local age=$(kubectl get certificate ollama-tls -n ${namespace} -o jsonpath='{.metadata.creationTimestamp}')
+			local current_time=$(date -u +%s)
+			local cert_time=$(date -u -d "$age" +%s)
+			local time_diff=$((current_time - cert_time))
+			
+			if [ $time_diff -lt 30 ]; then
+				echo -e "${GREEN}Сертификат ollama-tls был успешно пересоздан cert-manager'ом${NC}"
+			else
+				echo -e "${RED}Ошибка: Сертификат ollama-tls все еще существует${NC}"
+				exit 1
+			fi
+		fi
 	fi
 
 	# Специальная обработка для cert-manager
@@ -1069,7 +1177,11 @@ install_chart() {
 	}
 	
 	local helm_cmd="helm ${action} ${chart} ${CHARTS_DIR}/${chart}"
-	helm_cmd+=" --namespace ${namespace} --create-namespace"
+	helm_cmd+=" --namespace ${namespace}"
+	# Add --create-namespace flag only for install and upgrade actions
+	if [ "$action" = "install" ] || [ "$action" = "upgrade" ]; then
+		helm_cmd+=" --create-namespace"
+	fi
 	
 	[ -n "$version" ] && helm_cmd+=" --version ${version}"
 	[ -n "$values_file" ] && helm_cmd+=" -f ${values_file}"
