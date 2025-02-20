@@ -15,6 +15,10 @@ spec:
       labels:
         app: open-webui
     spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+      {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: open-webui
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -66,4 +70,6 @@ spec:
         persistentVolumeClaim:
           claimName: {{ .Release.Name }}-pvc
       {{- end }}
+
+
 

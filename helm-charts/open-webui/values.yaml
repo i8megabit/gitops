@@ -6,8 +6,9 @@ release:
 # Основные настройки приложения
 image:
   repository: ghcr.io/open-webui/open-webui
-  tag: latest
-  pullPolicy: IfNotPresent
+  tag: "v0.1.12"  # Using a specific version instead of latest
+  pullPolicy: Always  # Changed to Always to ensure fresh pulls
+  pullSecrets: []    # Add pull secrets if needed
 
 # Настройки развертывания
 deployment:
@@ -48,6 +49,12 @@ env:
   - name: OLLAMA_API_BASE
     value: "http://ollama.prod.svc.cluster.local:11434/api"
 
+# GPU Configuration
+gpu:
+  enabled: false  # Set to true only when NVIDIA device plugin is properly configured
+  count: 1       # Number of GPUs to request
+
+
 
 # Настройки сервиса
 service:
@@ -76,7 +83,11 @@ ingress:
           pathType: Prefix
   tls: []
 
-
+# TLS Configuration
+tls:
+  enabled: false  # Set to true to enable TLS
+  certificate: "" # Base64 encoded certificate (PEM format)
+  key: ""         # Base64 encoded private key (PEM format)
 
 persistence:
   enabled: true
